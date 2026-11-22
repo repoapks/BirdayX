@@ -94,6 +94,26 @@
             android:widgetLayout="@layout/preference_switch_widget"
             app:iconSpaceReserved="false" />
 
+        <!-- Hide zodiac sign when astrology disable toggle is active -->
+        <SwitchPreferenceCompat
+            android:defaultValue="false"
+            android:key="hide_zodiac_sign"
+            android:summaryOff="Signo do zodíaco visível quando astrologia desabilitada"
+            android:summaryOn="Signo do zodíaco oculto quando astrologia desabilitada"
+            android:title="Signo do zodíaco"
+            android:widgetLayout="@layout/preference_switch_widget"
+            app:iconSpaceReserved="false" />
+
+        <!-- Hide Chinese sign when astrology disable toggle is active -->
+        <SwitchPreferenceCompat
+            android:defaultValue="false"
+            android:key="hide_chinese_sign"
+            android:summaryOff="Signo chinês visível quando astrologia desabilitada"
+            android:summaryOn="Signo chinês oculto quando astrologia desabilitada"
+            android:title="Signo chinês"
+            android:widgetLayout="@layout/preference_switch_widget"
+            app:iconSpaceReserved="false" />
+
         <!-- Advanced yearly calendar mode -->
         <SwitchPreferenceCompat
             android:defaultValue="false"
