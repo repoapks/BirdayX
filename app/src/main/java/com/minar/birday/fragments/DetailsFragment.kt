@@ -155,6 +155,8 @@ class DetailsFragment : Fragment() {
         val shimmer = binding.detailsCountdownShimmer
         val shimmerEnabled = sharedPrefs.getBoolean("shimmer", false)
         val astrologyDisabled = sharedPrefs.getBoolean("disable_astrology", false)
+        val hideZodiacSign = sharedPrefs.getBoolean("hide_zodiac_sign", false)
+        val hideChineseSign = sharedPrefs.getBoolean("hide_chinese_sign", false)
         val hideImage = sharedPrefs.getBoolean("hide_images", false)
         val surnameFirst = sharedPrefs.getBoolean("surname_first", false)
         val titleText = formatName(event, surnameFirst)
@@ -384,6 +386,9 @@ class DetailsFragment : Fragment() {
 
         // Manage the different event types
         if (event.type == (EventCode.BIRTHDAY.name)) {
+            val hideZodiacInBirthday = astrologyDisabled && hideZodiacSign
+            val hideChineseInBirthday = astrologyDisabled && hideChineseSign
+
             // Hide the age and the chinese sign and use a shorter birthdate if the year is unknown
             if (!event.yearMatter!!) {
                 binding.detailsNextAge.visibility = View.GONE
@@ -398,10 +403,23 @@ class DetailsFragment : Fragment() {
                     event.originalDate.format(formatter)
                 binding.detailsChineseSignValue.text =
                     statsGenerator.getChineseSign(event)
+                if (hideChineseInBirthday) {
+                    binding.detailsChineseSign.visibility = View.GONE
+                    binding.detailsChineseSignValue.visibility = View.GONE
+                }
             }
+
+            if (hideZodiacInBirthday) {
+                binding.detailsZodiacSign.visibility = View.GONE
+                binding.detailsZodiacSignValue.visibility = View.GONE
+            }
+
             // Set the drawable of the zodiac sign or disable them entirely
-            if (astrologyDisabled) disableAstrology()
-            else when (statsGenerator.getZodiacSignNumber(event)) {
+            if (astrologyDisabled) {
+                if (hideZodiacInBirthday && (event.yearMatter != true || hideChineseInBirthday)) {
+                    disableAstrology()
+                }
+            } else when (statsGenerator.getZodiacSignNumber(event)) {
                 0 -> binding.detailsClearBackground.setImageDrawable(
                     ContextCompat.getDrawable(
                         requireContext(), R.drawable.ic_zodiac_sagittarius
