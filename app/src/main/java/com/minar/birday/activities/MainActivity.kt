@@ -45,6 +45,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.coordinatorlayout.widget.CoordinatorLayout
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.core.content.IntentCompat
 import androidx.core.content.edit
 import androidx.core.graphics.drawable.toBitmap
 import androidx.core.net.toUri
@@ -52,7 +53,6 @@ import androidx.core.view.animation.PathInterpolatorCompat
 import androidx.core.view.isVisible
 import androidx.core.view.updateLayoutParams
 import androidx.core.view.updatePaddingRelative
-import androidx.core.content.IntentCompat
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.withResumed
 import androidx.navigation.NavController
@@ -72,6 +72,7 @@ import com.minar.birday.fragments.dialogs.ImportContactsBottomSheet
 import com.minar.birday.fragments.dialogs.InsertEventBottomSheet
 import com.minar.birday.model.Event
 import com.minar.birday.model.EventResult
+import com.minar.birday.persistence.EventDatabase
 import com.minar.birday.preferences.backup.BirdayExporter
 import com.minar.birday.preferences.backup.BirdayImporter
 import com.minar.birday.preferences.backup.CalendarExporter
@@ -83,15 +84,15 @@ import com.minar.birday.preferences.backup.IcsExporter
 import com.minar.birday.preferences.backup.JsonExporter
 import com.minar.birday.preferences.backup.JsonImporter
 import com.minar.birday.utilities.AppRater
+import com.minar.birday.utilities.ICS_MIME_TYPE
 import com.minar.birday.utilities.addInsetsByMargin
 import com.minar.birday.utilities.applyBottomProgressiveBlur
 import com.minar.birday.utilities.applyLoopingAnimatedVectorDrawable
 import com.minar.birday.utilities.applyUserTheme
 import com.minar.birday.utilities.eventToResult
 import com.minar.birday.utilities.formatTextPreview
-import com.minar.birday.utilities.ICS_MIME_TYPE
-import com.minar.birday.utilities.icsToEvents
 import com.minar.birday.utilities.getThemeColor
+import com.minar.birday.utilities.icsToEvents
 import com.minar.birday.utilities.resultToEvent
 import com.minar.birday.utilities.shareUri
 import com.minar.birday.utilities.showIfNotAdded
@@ -99,7 +100,6 @@ import com.minar.birday.viewmodels.MainViewModel
 import com.minar.birday.widgets.EventWidgetProvider
 import com.minar.birday.widgets.MinimalWidgetProvider
 import com.minar.birday.workers.ImportContactsWorker
-import com.minar.birday.persistence.EventDatabase
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -478,22 +478,25 @@ class MainActivity : AppCompatActivity() {
         )
     }
 
-    override fun onDestroy() {
-        // TODO Experimental settings
+    override fun onStop() {
+        super.onStop()
+        if (isChangingConfigurations) return
         val autoExport = sharedPrefs.getBoolean("auto_export", false)
-        val lastExport = sharedPrefs.getLong("last_auto_export", 0)
-        val exportFolderUri = sharedPrefs.getString("export_folder", "")?.toUri()
-        // Max one auto export every 30 seconds
-        val allowedExportTime = lastExport + 30
+        val folderString = sharedPrefs.getString("auto_export_folder", "").orEmpty()
+        if (!autoExport || folderString.isBlank()) return
+        if (mainViewModel.allEventsUnfiltered.value.isNullOrEmpty()) return
+
+        val lastExport = sharedPrefs.getLong("last_auto_export", 0L)
         val currentTime = LocalDateTime.now().toEpochSecond(ZoneOffset.UTC)
-        if (autoExport && currentTime > allowedExportTime) {
+        // Max one auto export every 30 seconds
+        if (currentTime > lastExport + 30) {
             sharedPrefs.edit { putLong("last_auto_export", currentTime) }
-            val thread = Thread {
-                BirdayExporter.exportEvents(this, uri = exportFolderUri, autoBackup = true)
+            val folderUri = folderString.toUri()
+            val appCtx = applicationContext
+            thread {
+                BirdayExporter.exportEvents(appCtx, uri = folderUri, autoBackup = true)
             }
-            thread.start()
         }
-        super.onDestroy()
     }
 
     private fun NavController.navigateWithOptions(@IdRes destination: Int) {
@@ -595,8 +598,6 @@ class MainActivity : AppCompatActivity() {
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
             if (result.resultCode != RESULT_OK) return@registerForActivityResult
             val uri: Uri = result.data?.data ?: return@registerForActivityResult
-            // Save the selected uri to make it accessible for auto backup
-            sharedPrefs.edit(commit = true) { putString("export_folder", uri.toString()) }
             lifecycleScope.launch {
                 val exportedPath = withContext(Dispatchers.IO) {
                     BirdayExporter.exportEvents(
