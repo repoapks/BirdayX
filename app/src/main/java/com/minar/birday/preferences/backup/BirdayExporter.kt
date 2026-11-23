@@ -3,6 +3,7 @@ package com.minar.birday.preferences.backup
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.provider.DocumentsContract
 import android.util.AttributeSet
 import android.view.View
 import android.widget.Toast
@@ -43,13 +44,14 @@ class BirdayExporter(context: Context, attrs: AttributeSet?) : Preference(contex
     }
 
     companion object {
-        // Export to internal app folder and return file path
+        private const val AUTO_BACKUP_FILE_NAME = "BirdayBackup_auto"
+
+        // Export to SAF file Uri, SAF folder tree Uri, or internal app folder
         fun exportEvents(
             context: Context,
             uri: Uri?,
             autoBackup: Boolean = false
         ): String {
-            // TODO At the moment, the autobackup has the same name of the last saved manual backup
             val database = EventDatabase.getBirdayDatabase(context)
             val eventDao = database.eventDao()
             // The settings go in the copy too, in a table older versions ignore
@@ -57,41 +59,45 @@ class BirdayExporter(context: Context, attrs: AttributeSet?) : Preference(contex
             // Checkpoint WAL to flush DB to disk
             eventDao.checkpoint(SimpleSQLiteQuery("pragma wal_checkpoint(full)"))
             val dbFile = context.getDatabasePath("BirdayDB").absoluteFile
-            // Quick sanity checks
             if (!dbFile.exists() || dbFile.length() == 0L) {
-                // DB file missing or empty: return failure
                 handleResult(autoBackup, false, context, false)
                 return ""
             }
             try {
-                if (uri != null  && uri.toString().isNotBlank()) {
-                    // Write to the SAF Uri provided by the user
-                    context.contentResolver.openOutputStream(uri)?.use { os ->
+                if (uri != null && uri.toString().isNotBlank()) {
+                    val targetFileUri = if (DocumentsContract.isTreeUri(uri)) {
+                        resolveOrCreateFileInTree(context, uri, AUTO_BACKUP_FILE_NAME)
+                            ?: throw IOException("Cannot create or access file in folder: $uri")
+                    } else {
+                        uri
+                    }
+
+                    // Truncate ("wt") so previous content is cleanly overwritten
+                    (context.contentResolver.openOutputStream(targetFileUri, "wt")
+                        ?: context.contentResolver.openOutputStream(targetFileUri))?.use { os ->
                         dbFile.inputStream().use { fis ->
                             fis.copyTo(os)
                             os.flush()
                         }
-                    } ?: throw IOException("Cannot open output stream for uri: $uri")
-                    // Optional: try taking persistable permission (may or may not be supported)
-                    try {
-                        val takeFlags =
-                            (Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
-                        context.contentResolver.takePersistableUriPermission(uri, takeFlags)
-                    } catch (_: Exception) {
-                        // Not critical — ignore if provider doesn't allow persistable permission
+                    } ?: throw IOException("Cannot open output stream for uri: $targetFileUri")
+
+                    if (!DocumentsContract.isTreeUri(uri)) {
+                        try {
+                            val takeFlags =
+                                (Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+                            context.contentResolver.takePersistableUriPermission(uri, takeFlags)
+                        } catch (_: Exception) {
+                        }
                     }
-                    // Notify user on UI thread
+
                     handleResult(autoBackup, true, context, true)
-                    // Return the uri string so the caller can share it
-                    return uri.toString()
+                    return targetFileUri.toString()
                 } else {
                     // Legacy behavior: write to app files dir
-                    val dbFile = context.getDatabasePath("BirdayDB").absoluteFile
                     val appDirectory = File(context.getExternalFilesDir(null)!!.absolutePath)
                     val fileName =
-                        if (autoBackup) "BirdayBackup_auto" else "BirdayBackup_${LocalDate.now()}"
+                        if (autoBackup) AUTO_BACKUP_FILE_NAME else "BirdayBackup_${LocalDate.now()}"
                     val fileFullPath: String = appDirectory.path + File.separator + fileName
-                    // Snackbar need the UI thread to work, so they must be forced on that thread
                     try {
                         dbFile.copyTo(File(fileFullPath), true)
                         handleResult(autoBackup, true, context, false)
@@ -108,6 +114,45 @@ class BirdayExporter(context: Context, attrs: AttributeSet?) : Preference(contex
                 return ""
             }
         }
+
+        private fun resolveOrCreateFileInTree(
+            context: Context,
+            treeUri: Uri,
+            displayName: String
+        ): Uri? {
+            val resolver = context.contentResolver
+            val treeDocId = DocumentsContract.getTreeDocumentId(treeUri)
+            val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, treeDocId)
+
+            resolver.query(
+                childrenUri,
+                arrayOf(
+                    DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                    DocumentsContract.Document.COLUMN_DISPLAY_NAME
+                ),
+                null,
+                null,
+                null
+            )?.use { cursor ->
+                val idIdx = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
+                val nameIdx = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
+                while (cursor.moveToNext()) {
+                    if (idIdx >= 0 && nameIdx >= 0 && cursor.getString(nameIdx) == displayName) {
+                        val existingDocId = cursor.getString(idIdx)
+                        return DocumentsContract.buildDocumentUriUsingTree(treeUri, existingDocId)
+                    }
+                }
+            }
+
+            val parentDocUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, treeDocId)
+            return DocumentsContract.createDocument(
+                resolver,
+                parentDocUri,
+                "application/octet-stream",
+                displayName
+            )
+        }
+
         // Show a toast or a snackbar depending on the result
         private fun handleResult(
             autoBackup: Boolean = false,
