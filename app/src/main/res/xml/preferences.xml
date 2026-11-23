@@ -269,6 +269,14 @@
             android:widgetLayout="@layout/preference_switch_widget"
             app:iconSpaceReserved="false" />
 
+        <!-- Folder used for automatic export -->
+        <Preference
+            android:key="auto_export_folder"
+            android:summary="Nenhuma pasta selecionada"
+            android:title="Pasta de exportação automática"
+            app:dependency="auto_export"
+            app:iconSpaceReserved="false" />
+
     </PreferenceCategory>
 
     <PreferenceCategory
