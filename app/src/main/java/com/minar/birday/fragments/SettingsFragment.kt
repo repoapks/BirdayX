@@ -5,11 +5,14 @@ import android.content.ComponentName
 import android.content.Intent
 import android.content.SharedPreferences
 import android.content.SharedPreferences.OnSharedPreferenceChangeListener
+import android.net.Uri
 import android.os.Bundle
 import android.view.View
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatDelegate
 import androidx.core.app.ActivityCompat
 import androidx.core.content.edit
+import androidx.core.net.toUri
 import androidx.fragment.app.activityViewModels
 import androidx.navigation.NavController
 import androidx.navigation.fragment.findNavController
@@ -19,19 +22,41 @@ import androidx.preference.PreferenceFragmentCompat
 import androidx.preference.SwitchPreferenceCompat
 import androidx.recyclerview.widget.RecyclerView
 import com.minar.birday.R
-import com.minar.birday.preferences.PreferenceTilesDecoration
 import com.minar.birday.activities.MainActivity
 import com.minar.birday.persistence.LocalDateTypeConverter
+import com.minar.birday.preferences.PreferenceTilesDecoration
+import com.minar.birday.preferences.backup.BirdayExporter
 import com.minar.birday.utilities.addNavbarClearance
 import com.minar.birday.utilities.getThemeColor
 import com.minar.birday.utilities.isProgressiveBlurAvailable
 import com.minar.birday.viewmodels.MainViewModel
 import com.minar.birday.widgets.EventWidgetProvider
 import com.minar.birday.widgets.MinimalWidgetProvider
-
+import kotlin.concurrent.thread
 
 class SettingsFragment : PreferenceFragmentCompat(), OnSharedPreferenceChangeListener {
     private val mainViewModel: MainViewModel by activityViewModels()
+
+    private val selectAutoExportFolder =
+        registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri: Uri? ->
+            if (uri == null) return@registerForActivityResult
+            val flags =
+                Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+            try {
+                requireContext().contentResolver.takePersistableUriPermission(uri, flags)
+            } catch (_: Exception) {
+            }
+            preferenceScreen.sharedPreferences?.edit {
+                putString("auto_export_folder", uri.toString())
+            }
+            updateAutoExportFolderSummary()
+            if (!mainViewModel.allEventsUnfiltered.value.isNullOrEmpty()) {
+                val appCtx = requireContext().applicationContext
+                thread {
+                    BirdayExporter.exportEvents(appCtx, uri = uri, autoBackup = true)
+                }
+            }
+        }
 
     override fun onCreatePreferences(savedInstanceState: Bundle?, rootKey: String?) {
         setPreferencesFromResource(R.xml.preferences, rootKey)
@@ -75,6 +100,13 @@ class SettingsFragment : PreferenceFragmentCompat(), OnSharedPreferenceChangeLis
                     getString(R.string.additional_notification_description)
                 )
             }
+
+        findPreference<Preference>("auto_export_folder")?.setOnPreferenceClickListener {
+            (activity as? MainActivity)?.vibrate()
+            selectAutoExportFolder.launch(null)
+            true
+        }
+        updateAutoExportFolderSummary()
     }
 
     override fun onResume() {
@@ -82,6 +114,7 @@ class SettingsFragment : PreferenceFragmentCompat(), OnSharedPreferenceChangeLis
         // Set up a listener whenever a key changes
         preferenceScreen.sharedPreferences
             ?.registerOnSharedPreferenceChangeListener(this)
+        updateAutoExportFolderSummary()
     }
 
     override fun onPause() {
@@ -123,12 +156,31 @@ class SettingsFragment : PreferenceFragmentCompat(), OnSharedPreferenceChangeLis
             "hide_images" -> updateWidgets(updateUpcoming = true)
             "multi_additional_notification" -> updateWidgets(updateMinimal = true)
             "disable_astrology" -> (requireActivity() as MainActivity).forceRefreshStats()
+            "auto_export" -> {
+                if (sharedPreferences.getBoolean("auto_export", false) &&
+                    sharedPreferences.getString("auto_export_folder", "").isNullOrBlank()
+                ) {
+                    selectAutoExportFolder.launch(null)
+                }
+            }
+            "auto_export_folder" -> updateAutoExportFolderSummary()
             // The dao is already bound here, so the flag is set directly instead of going through
             // EventDatabase, then the list is reloaded to reproject the Feb 29 events
             LocalDateTypeConverter.PREFERENCE_KEY -> {
                 LocalDateTypeConverter.loadPreference(requireContext())
                 mainViewModel.refreshEvents()
             }
+        }
+    }
+
+    private fun updateAutoExportFolderSummary() {
+        val folderPref = findPreference<Preference>("auto_export_folder") ?: return
+        val savedUri = preferenceScreen.sharedPreferences?.getString("auto_export_folder", "").orEmpty()
+        if (savedUri.isBlank()) {
+            folderPref.summary = "Nenhuma pasta selecionada"
+        } else {
+            val decoded = Uri.decode(savedUri.toUri().lastPathSegment ?: savedUri)
+            folderPref.summary = decoded.substringAfterLast(':')
         }
     }
 
