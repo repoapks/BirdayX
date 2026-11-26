@@ -53,6 +53,8 @@ import androidx.core.view.animation.PathInterpolatorCompat
 import androidx.core.view.isVisible
 import androidx.core.view.updateLayoutParams
 import androidx.core.view.updatePaddingRelative
+import androidx.fragment.app.Fragment
+import androidx.fragment.app.FragmentManager
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.withResumed
 import androidx.navigation.NavController
@@ -68,6 +70,10 @@ import com.google.android.material.snackbar.Snackbar
 import com.minar.birday.R
 import com.minar.birday.databinding.ActivityMainBinding
 import com.minar.birday.databinding.NavTabBinding
+import com.minar.birday.fragments.FavoritesFragment
+import com.minar.birday.fragments.HomeFragment
+import com.minar.birday.fragments.OverviewFragment
+import com.minar.birday.fragments.SettingsFragment
 import com.minar.birday.fragments.dialogs.ImportContactsBottomSheet
 import com.minar.birday.fragments.dialogs.InsertEventBottomSheet
 import com.minar.birday.model.Event
@@ -118,6 +124,10 @@ class MainActivity : AppCompatActivity() {
     private lateinit var backHomeCallback: OnBackPressedCallback
     private var selectedTabIndex = 0
 
+    // Instâncias cacheadas dos fragmentos principais para evitar recriar o calendário anual
+    private val cachedTabFragments = mutableMapOf<Int, Fragment>()
+    private var showingCachedTab = true
+
     // Read every time: the activity keeps config changes, so this flips without a recreation
     private val isNavRail: Boolean
         get() = resources.getBoolean(R.bool.nav_rail)
@@ -167,6 +177,13 @@ class MainActivity : AppCompatActivity() {
             val navHostFragment = supportFragmentManager
                 .findFragmentById(R.id.navHostFragment) as NavHostFragment
             return navHostFragment.navController
+        }
+
+    private val hostFragmentManager: FragmentManager
+        get() {
+            val navHostFragment = supportFragmentManager
+                .findFragmentById(R.id.navHostFragment) as NavHostFragment
+            return navHostFragment.childFragmentManager
         }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -239,11 +256,14 @@ class MainActivity : AppCompatActivity() {
 
         // Setup navigation tabs based on central_tab_calendar preference
         setupNavTabs(sharedPrefs.getBoolean("central_tab_calendar", false))
+        initCachedTabFragments()
 
         // Only a tab destination goes back to home: on a secondary one the navigation pops first
         navController.addOnDestinationChangedListener { _, destination, _ ->
             val onTab = navTabs.any { it.destination == destination.id }
             backHomeCallback.isEnabled = onTab && selectedTabIndex != 0
+            showingCachedTab = onTab
+            syncCachedTabVisibility()
             renderNavAction()
         }
         applyNavbarPlacement()
@@ -262,11 +282,15 @@ class MainActivity : AppCompatActivity() {
                 }
 
                 NavActionMode.DELETE_SEARCH -> confirmDeleteSearch()
-                NavActionMode.ABOUT -> navController.navigate(
-                    if (navController.currentDestination?.id == R.id.experimentalSettingsFragment)
-                        R.id.action_experimentalSettingsFragment_to_aboutFragment
-                    else R.id.action_navigationSettings_to_aboutFragment
-                )
+                NavActionMode.ABOUT -> {
+                    showingCachedTab = false
+                    syncCachedTabVisibility()
+                    navController.navigate(
+                        if (navController.currentDestination?.id == R.id.experimentalSettingsFragment)
+                            R.id.action_experimentalSettingsFragment_to_aboutFragment
+                        else R.id.action_navigationSettings_to_aboutFragment
+                    )
+                }
 
                 NavActionMode.BACK -> navController.popBackStack()
             }
@@ -361,6 +385,52 @@ class MainActivity : AppCompatActivity() {
         importIcsFromIntent(intent)
     }
 
+    // Cria e mantém os fragmentos das abas na memória para exibir/ocultar sem recriar
+    private fun initCachedTabFragments() {
+        val fm = hostFragmentManager
+        val containerId = R.id.navHostFragment
+        val tx = fm.beginTransaction()
+
+        navTabs.forEachIndexed { index, tab ->
+            val existing = fm.findFragmentByTag("cached_tab_${tab.destination}")
+            val fragment = existing ?: createFragmentForDestination(tab.destination)
+            if (existing == null) {
+                tx.add(containerId, fragment, "cached_tab_${tab.destination}")
+            }
+            if (index == selectedTabIndex && showingCachedTab) {
+                tx.show(fragment)
+            } else {
+                tx.hide(fragment)
+            }
+            cachedTabFragments[tab.destination] = fragment
+        }
+        tx.commitAllowingStateLoss()
+    }
+
+    private fun createFragmentForDestination(@IdRes destination: Int): Fragment = when (destination) {
+        R.id.navigationMain -> HomeFragment()
+        R.id.overviewFragment -> OverviewFragment()
+        R.id.navigationFavorites -> FavoritesFragment()
+        R.id.navigationSettings -> SettingsFragment()
+        else -> HomeFragment()
+    }
+
+    private fun syncCachedTabVisibility() {
+        if (!::navTabs.isInitialized) return
+        val fm = hostFragmentManager
+        val tx = fm.beginTransaction()
+        val activeDest = navTabs.getOrNull(selectedTabIndex)?.destination
+
+        cachedTabFragments.forEach { (destId, fragment) ->
+            if (showingCachedTab && destId == activeDest) {
+                tx.show(fragment)
+            } else {
+                tx.hide(fragment)
+            }
+        }
+        tx.commitAllowingStateLoss()
+    }
+
     // Configures the bottom navigation tabs, allowing the central tab to switch between Favorites and Annual Calendar
     fun setupNavTabs(useCalendar: Boolean) {
         val centralTab = if (useCalendar) {
@@ -396,6 +466,9 @@ class MainActivity : AppCompatActivity() {
                 if (index == selectedTabIndex) popSecondaryDestination()
                 else selectNavTab(index)
             }
+        }
+        if (cachedTabFragments.isNotEmpty()) {
+            initCachedTabFragments()
         }
         renderNavTabs(animate = false)
     }
@@ -468,6 +541,8 @@ class MainActivity : AppCompatActivity() {
 
     // The details of an event, from wherever the app was: back to the list first, so Back leads home
     private fun showEventDetails(event: EventResult) {
+        showingCachedTab = false
+        syncCachedTabVisibility()
         navController.popBackStack(R.id.navigationMain, false)
         navController.navigate(
             R.id.detailsFragment,
@@ -877,10 +952,12 @@ class MainActivity : AppCompatActivity() {
     // Navigate to the destination of a tab, keeping the navbar and the back callback in sync
     private fun selectNavTab(index: Int) {
         selectedTabIndex = index
+        showingCachedTab = true
         // Only the home tab exits the app on back, the others go back to it first
         backHomeCallback.isEnabled = index != 0
         renderNavTabs(animate = true)
         renderNavAction()
+        syncCachedTabVisibility()
         navController.navigateWithOptions(navTabs[index].destination)
     }
 
